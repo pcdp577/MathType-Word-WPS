@@ -15,6 +15,19 @@ It supports:
 - inspecting DOCX XML for OLE/image/OMML correctness
 - exporting/inserting WMF/EMF formula images as an explicit fallback
 
+## Where It Fits In Image-To-Editable-Formula Workflows
+
+This project does not perform formula OCR from screenshots by itself. Its job starts after a formula image has been recognized or transcribed into MathML or LaTeX.
+
+Typical workflow:
+
+1. Start from a formula screenshot, scanned formula, or formula image already embedded in a manuscript.
+2. Use an external recognizer, OCR service, LLM-assisted transcription, or manual editing to produce MathML or LaTeX.
+3. Use this tool to replace the image-only formula with a real MathType OLE object (`Equation.DSMT4`) in Word/WPS.
+4. Let the tool keep the equation number as normal text, match the formula size to the manuscript body text, and inspect the saved DOCX to confirm that the result is editable OLE rather than another image.
+
+In short: `image -> external recognition/transcription -> MathML/LaTeX -> this tool -> editable MathType object in Word/WPS`.
+
 ## Requirements
 
 - Windows desktop session

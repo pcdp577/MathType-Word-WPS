@@ -9,6 +9,8 @@ Use this skill when a `.docx` manuscript needs editable MathType formulas rather
 
 `MathML or simple LaTeX -> MathType OLE object -> centered formula paragraph -> right-aligned text equation number -> XML inspection`
 
+For image-to-editable-formula work, this skill does not do formula OCR. First obtain MathML or LaTeX from an external recognizer, OCR service, LLM-assisted transcription, or manual cleanup. Then use this skill to replace the image-only formula with an editable MathType OLE object in Word/WPS.
+
 ## Core Rules
 
 - Prefer real MathType OLE objects (`Equation.DSMT4`) when the user wants editable equations.
