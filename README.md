@@ -18,8 +18,7 @@ It supports:
 - Windows desktop session
 - Python 3.10+
 - Microsoft Word or WPS Office
-- MathType installed normally; a standard activated MathType installation should register the editable `Equation.DSMT4` OLE/COM object automatically
-- An activated/licensed MathType installation for real OLE insertion
+- An activated/licensed MathType installation; a standard activated install should register the editable `Equation.DSMT4` OLE/COM object automatically for real OLE insertion
 
 Install Python dependencies:
 
