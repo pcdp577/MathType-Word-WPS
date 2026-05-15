@@ -1,10 +1,12 @@
 # MathType-Word/WPS
 
-Codex skill and CLI helper for inserting editable MathType equations into `.docx` manuscripts through WPS or Microsoft Word.
+Codex skill and CLI helper for inserting editable MathType equations into Word manuscripts through WPS or Microsoft Word.
+
+This skill is designed for manuscript production where formulas must remain editable, visually consistent, and publication-ready instead of being pasted as flat screenshots. It automates the fussy parts of the workflow: opening Word/WPS in the background, inserting a real MathType equation object, keeping the equation number as normal right-aligned text, matching formula size to the surrounding body text, and checking the saved document so you can tell whether the result is a true editable MathType object or only an image/OMML fallback. The primary target is `.docx`; legacy `.doc` files are supported through the same Word/WPS automation path after opening or converting them with Word/WPS when XML-level inspection is needed.
 
 It supports:
 
-- creating real MathType OLE equations (`Equation.DSMT4`)
+- creating real editable MathType OLE equations (`Equation.DSMT4`, the MathType equation object type that Word/WPS can reopen and edit with MathType)
 - using WPS or Word COM backends
 - keeping equation numbers as normal right-aligned document text
 - resizing formulas against document body font size
@@ -16,7 +18,7 @@ It supports:
 - Windows desktop session
 - Python 3.10+
 - Microsoft Word or WPS Office
-- MathType installed and registered as `Equation.DSMT4`
+- MathType installed normally; a standard activated MathType installation should register the editable `Equation.DSMT4` OLE/COM object automatically
 - An activated/licensed MathType installation for real OLE insertion
 
 Install Python dependencies:
@@ -57,7 +59,7 @@ $env:MATHTYPE_EXE = "C:\Path\To\MathType.exe"
 
 or pass `--mathtype-exe`.
 
-If MathType is not registered as `Equation.DSMT4`, or the runtime probe fails, activate/license MathType or repair the installation before inserting equations.
+If `Equation.DSMT4` is missing, Word/WPS cannot create the editable MathType object. In that case, activate/license MathType first; if MathType is already activated, repair or reinstall MathType so Windows registers its OLE/COM object again.
 
 ## Insert An Editable Formula
 
