@@ -1,0 +1,5 @@
+interface:
+  display_name: "MathType-Word/WPS"
+  short_description: "Insert and size editable MathType equations in Word or WPS"
+  brand_color: "#355C7D"
+  default_prompt: "Use $MathType-Word/WPS to insert or inspect editable MathType OLE equations in a DOCX manuscript through Word or WPS, keeping formula numbers as document text and matching formula size to body text."

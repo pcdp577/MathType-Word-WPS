@@ -1,0 +1,5 @@
+lxml>=5.0.0
+pywin32>=306; platform_system == "Windows"
+
+# Optional: needed only for --latex / --latex-file input.
+# latex2mathml>=3.77.0
