@@ -97,7 +97,7 @@ Expected for real MathType OLE:
 Clone or copy this folder into your Codex skills directory:
 
 ```powershell
-git clone https://github.com/Rss3208/MathType-Word-WPS.git "$env:USERPROFILE\.codex\skills\MathType-Word-WPS"
+git clone https://github.com/liuyifan577/MathType-Word-WPS.git "$env:USERPROFILE\.codex\skills\MathType-Word-WPS"
 ```
 
 Restart Codex after installation.
