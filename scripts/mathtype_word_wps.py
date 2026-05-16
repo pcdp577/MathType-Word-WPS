@@ -3,8 +3,9 @@
 
 The preferred manuscript path creates a real MathType Equation.DSMT4 OLE
 object through WPS/Word Insert Object semantics. WMF/EMF insertion remains as
-an explicit vector-image fallback. OLE objects can be auto-sized against the
-document body font so insertion is not treated as complete until visual scale
+an explicit vector-image fallback. MathML is sized against the document body
+font before it is pasted into MathType, and the OLE frame is then matched to the
+resulting formula so insertion is not treated as complete until visual scale
 has been normalized.
 """
 
@@ -103,6 +104,38 @@ def half_points_to_pt(value: str | None) -> float | None:
 def format_pt(value: float) -> str:
     text = f"{float(value):.2f}".rstrip("0").rstrip(".")
     return text if text else "0"
+
+
+def apply_mathml_font_size(mathml: str, font_pt: float | None) -> str:
+    """Wrap MathML content in mstyle so MathType receives a real formula size."""
+    if font_pt is None or float(font_pt) <= 0:
+        return mathml
+    stripped = mathml.strip()
+    if not stripped:
+        return mathml
+    parser = etree.XMLParser(remove_blank_text=False, recover=True)
+    try:
+        root = etree.fromstring(stripped.encode("utf-8"), parser=parser)
+    except Exception:
+        return mathml
+    if etree.QName(root).localname != "math":
+        return mathml
+
+    ns_uri = etree.QName(root).namespace or root.nsmap.get(None) or "http://www.w3.org/1998/Math/MathML"
+    size = f"{format_pt(font_pt)}pt"
+    children = list(root)
+    if len(children) == 1 and etree.QName(children[0]).localname == "mstyle":
+        children[0].set("mathsize", size)
+    else:
+        mstyle = etree.Element(f"{{{ns_uri}}}mstyle")
+        mstyle.set("mathsize", size)
+        mstyle.text = root.text
+        root.text = None
+        for child in children:
+            root.remove(child)
+            mstyle.append(child)
+        root.append(mstyle)
+    return etree.tostring(root, encoding="unicode")
 
 
 def parse_css_pt(style: str | None) -> dict[str, float]:
@@ -309,6 +342,7 @@ def resolve_formula_object_size(
         "body_font_source": body_source,
         "formula_font_scale": round(scale, 4),
         "target_formula_font_pt": round(target_formula_font_pt, 2),
+        "mathml_font_size_pt": round(target_formula_font_pt, 2),
         "formula_lines": max(1, lines),
         "ole_line_height_factor": round(line_factor, 4),
         "auto_height_pt": round(auto_height_pt, 2),
@@ -323,6 +357,7 @@ def print_size_info(size_info: dict[str, object]) -> None:
         "body_font_source",
         "formula_font_scale",
         "target_formula_font_pt",
+        "mathml_font_size_pt",
         "formula_lines",
         "ole_line_height_factor",
         "auto_height_pt",
@@ -612,7 +647,7 @@ def set_mathml_clipboard(mathml: str) -> None:
     win32clipboard.OpenClipboard()
     try:
         win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardText(mathml)
+        win32clipboard.SetClipboardText(mathml, win32clipboard.CF_UNICODETEXT)
         custom = {
             name: win32clipboard.RegisterClipboardFormat(name)
             for name in ("MathML", "MathML Presentation", "application/mathml+xml")
@@ -1537,7 +1572,8 @@ def replace_docx_ole_once(
         win32gui.PostMessage(hwnd, win32con.WM_COMMAND, MATHTYPE_SELECT_ALL_COMMAND_ID, 0)
         time.sleep(0.3)
 
-        set_mathml_clipboard(mathml)
+        sized_mathml = apply_mathml_font_size(mathml, float(size_info["mathml_font_size_pt"]))
+        set_mathml_clipboard(sized_mathml)
         win32gui.PostMessage(hwnd, win32con.WM_COMMAND, MATHTYPE_PASTE_COMMAND_ID, 0)
         time.sleep(float(args.after_paste_wait))
         if args.editor_screenshot:
