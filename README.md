@@ -12,7 +12,7 @@ It supports:
 - using WPS or Word COM backends
 - keeping equation numbers as normal right-aligned document text
 - setting MathType internal formula character size and Times New Roman family against document body font size, then fitting the OLE frame without unintended downscaling
-- inspecting DOCX XML for OLE/image/OMML correctness
+- inspecting DOCX XML, MathType native OLE streams, and cached WMF/EMF previews for OLE/image/OMML correctness
 - exporting/inserting WMF/EMF formula images as an explicit fallback
 
 ## Where It Fits In Image-To-Editable-Formula Workflows
@@ -77,6 +77,16 @@ If `Equation.DSMT4` is missing, Word/WPS cannot create the editable MathType obj
 
 ## Insert An Editable Formula
 
+When editability or preview glyph fidelity is in doubt, first convert the source MathML to native MathType EF/MTEF. This avoids the fragile "open MathType editor and paste MathML" path and gives you a native MathType payload to validate:
+
+```powershell
+python .\scripts\mathtype_word_wps.py native-bridge-mtef `
+  --mathml-file ".\formula11.mathml" `
+  --output-mtef ".\formula11.mtef"
+```
+
+The native bridge performs one bounded MathType DataObject conversion and then cleans up the MathType embedding server. Do not run repeated GUI macro probes or brute-force `Application.Run` loops.
+
 ```powershell
 python .\scripts\mathtype_word_wps.py replace-docx-ole `
   --docx ".\manuscript.docx" `
@@ -93,7 +103,9 @@ By default, `--backend auto` tries the full insertion workflow with WPS first an
 
 Word and WPS are always opened hidden through COM automation. The tool should not show the Word/WPS UI during normal processing.
 
-Sizing rule: `--formula-font-scale 0.8` controls the internal MathType main-character size, not just the external OLE box. The default font family is `Times New Roman`. For complex formulas with fractions, large sums, or multi-row alignment, the OLE frame is treated as a minimum container and is not shrunk below MathType's natural inserted height unless `--allow-downscale-ole` is explicitly passed. MathML is serialized as ASCII numeric entities before paste so symbols such as Greek letters, `×`, `·`, and `∑` do not become question marks in MathType.
+After insertion, the tool cleans up MathType/MathTypeLib plus safe WPS preview/embedding helper processes and waits until the target document is writable again. This matters because a formula can be visually correct and editable while a stale OLE preview helper still blocks normal typing in the foreground editor.
+
+Sizing rule: `--formula-font-scale 0.8` controls the internal MathType main-character size, not just the external OLE box. The default font family is `Times New Roman`. For complex formulas with fractions, large sums, or multi-row alignment, the OLE frame is treated as a minimum container and is not shrunk below MathType's natural inserted height unless `--allow-downscale-ole` is explicitly passed. MathML is normalized for MathType/Word preview stability and serialized as ASCII numeric entities before paste: for example, scalar middle-dot multiplication is converted from U+00B7 to the dot operator U+22C5, and kernel-size or shape multiplication signs can be converted to ASCII `x` so the visible Word/WPS preview does not become `?` even when the embedded MathType object is editable.
 
 ## Inspect
 
@@ -109,6 +121,29 @@ Expected for real MathType OLE:
 - `ole_progids=['Equation.DSMT4']`
 - `blips=0`
 - `omath=0`
+- `Equation Native` present in `ole_analysis`
+- no suspicious `preview_cache_question_marks` in cached WMF/EMF previews
+
+For a manuscript-wide offline audit that does not open Word or MathType:
+
+```powershell
+python .\scripts\mathtype_word_wps.py audit-docx-formulas `
+  --docx ".\manuscript.docx" `
+  --output-json ".\formula_audit.json" `
+  --include-details
+```
+
+Important distinction: an editable MathType OLE shell and the document-visible preview are different layers. If the document shows `?` but the MathType editor opens normally, regenerate the cached preview or reinsert from normalized native MTEF. If MathType opens but the formula behaves as one uneditable pasted object, regenerate the formula from native MTEF or rebuild it in MathType; resizing the OLE frame cannot fix that. Treat `preview_cache_question_marks` as a warning, not a final verdict: byte-level WMF/EMF scans can flag harmless bytes, so final acceptance for this issue should include a Word/PDF rendered screenshot of the formula pages.
+
+If the user cannot type in the manuscript after a run, immediately run `cleanup-leftovers`, then confirm the `.docx` is free by opening it with exclusive read/write access. Do not report the formula task as complete while hidden OLE, MathType, Word, or WPS preview helpers are still affecting foreground editing.
+
+If the user cannot type in any text box, including browsers or Codex itself, stop treating it as a document-lock problem. This is usually a Windows text-service or IME hook failure involving `ctfmon`, `TextInputHost`, a third-party IME such as Tencent WeType, or a hidden Office OLE server such as `VISIO.EXE /Automation -Embedding` pulling the IME into its process tree. Run:
+
+```powershell
+python .\scripts\mathtype_word_wps.py recover-text-input --stop-wetype
+```
+
+This restarts the Windows text-input chain and, when requested, stops Tencent WeType processes.
 
 ## Use With Cursor, Claude Code, Or Other Agents
 

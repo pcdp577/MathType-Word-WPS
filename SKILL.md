@@ -7,23 +7,30 @@ description: "Use when a manuscript formula must be inserted, replaced, inspecte
 
 Use this skill when a `.docx` manuscript needs editable MathType formulas rather than screenshots or OMML-only equations. The stable path is:
 
-`MathML or simple LaTeX -> MathType OLE object -> centered formula paragraph -> right-aligned text equation number -> XML inspection`
+`formula image -> external MathML/LaTeX transcription -> native MathType EF/MTEF -> MathType OLE object -> centered formula paragraph -> right-aligned text equation number -> native-stream + preview-cache inspection`
 
 For image-to-editable-formula work, this skill does not do formula OCR. First obtain MathML or LaTeX from an external recognizer, OCR service, LLM-assisted transcription, or manual cleanup. Then use this skill to replace the image-only formula with an editable MathType OLE object in Word/WPS.
 
 ## Core Rules
 
 - Prefer real MathType OLE objects (`Equation.DSMT4`) when the user wants editable equations.
+- Treat `Equation.DSMT4` as necessary but not sufficient. A successful formula must also have a real MathType native stream (`Equation Native` / `MathType EF` / MTEF) and a sane cached WMF/EMF preview.
+- Do not validate only the OLE shell. This can miss two distinct failures: the document preview shows `?` while the internal MathType content is normal, or MathType opens but the content is one uneditable pasted object.
+- Prefer the native bridge (`native-bridge-mtef`) for final formula generation or diagnosis. The older "open embedded MathType editor and paste MathML" path is legacy and should not be used as final proof when editability or preview glyphs are in doubt.
 - Put the equation number, e.g. `(1)`, in the Word/WPS paragraph as normal text; do not include it inside MathType.
 - Default layout is one paragraph: center tab -> formula object -> right tab -> number.
-- Always inspect after insertion: require `ole_objects=1`, `ole_progids=['Equation.DSMT4']`, `blips=0`, `omath=0`, expected text number, and sane tab stops.
+- Always inspect after insertion: require `ole_objects=1`, `ole_progids=['Equation.DSMT4']`, `blips=0`, `omath=0`, expected text number, sane tab stops, `Equation Native` present, no XML-only native stream, and no suspicious cached preview glyphs.
 - Do not treat insertion as complete until the MathType internal main-character size and font family are normalized against manuscript body text. Default: `formula_font_pt = body_font_pt * 0.8` and `formula_font_family = Times New Roman`; the script injects these into MathML as `mstyle mathsize="...pt" mathfamily="Times New Roman" fontfamily="Times New Roman"` before pasting into MathType.
 - The OLE frame is only a container fit, not the primary font-size control. Never shrink a complex formula below MathType's natural inserted height unless the user explicitly allows downscaling with `--allow-downscale-ole`; otherwise fractions, large sums, and multi-row formulas can look falsely smaller even when the internal formula font was set correctly.
-- Before pasting into MathType, serialize MathML to ASCII numeric entities for clipboard formats. This avoids Greek letters, multiplication signs, middle dots, summation symbols, and similar characters being mis-decoded as `?` or mojibake in MathType's OLE paste path.
+- Before pasting into MathType, normalize preview-unstable MathML operators and then serialize MathML to ASCII numeric entities for clipboard formats. In practice, MathType/Word preview caches can display U+00B7 middle dot and U+00D7 multiplication sign as `?` even when the embedded MathType formula opens correctly; the script normalizes these to preview-stable forms (`U+22C5` dot operator for scalar multiplication, ASCII `x` for kernel-size or shape text) before MTEF/OLE insertion.
+- Treat cached-preview byte scans as risk indicators, not final visual proof. If `preview_cache_question_marks` remains but the rendered Word/PDF screenshot is clean, report it as a byte-level false positive; if the rendered screenshot still shows `?`, regenerate from normalized MathML/MTEF and re-render.
 - Word/WPS must be opened in hidden/background COM mode. Do not show Word/WPS UI during normal processing; `--visible-app` is deprecated and ignored by the script.
+- After every OLE insertion, restore the user's editing environment before reporting success: close the hidden Word/WPS COM document, clean MathType/MathTypeLib leftovers, clean safe WPS `/Preview` / `-Embedding` helper processes, and verify the target `.docx` can be opened with exclusive read/write access. A visually correct formula is not a complete success if the user cannot type in the manuscript afterward.
+- If the user reports that no text box works anywhere, including browsers or Codex itself, stop diagnosing the manuscript. That is a Windows input-method/text-services failure, usually `ctfmon`, `TextInputHost`, a third-party IME hook such as Tencent WeType, or a hidden Office OLE server such as `VISIO.EXE /Automation -Embedding` that has pulled an IME into its process tree. Run `recover-text-input`; add `--stop-wetype` when WeType processes are present or suspected. Keep the default `--stop-office-embedding` unless the user is intentionally running hidden Office automation.
+- Never run unbounded MathType GUI probing, macro brute-force loops, or repeated `Application.Run` attempts. Any MathType probe must be one formula / one attempt / bounded timeout / process cleanup / post-run process verification.
 - If MathType is missing, not registered, or appears unlicensed/not activated, stop and tell the user to install, repair, register, or activate MathType before retrying.
 - Keep a backup before modifying a live manuscript.
-- Use `cleanup-leftovers` after a failed run if MathType stays in the background.
+- Use `cleanup-leftovers` after any failed or suspicious run. It should stop MathType/MathTypeLib and safe WPS preview/embedding helpers, but it must not kill ordinary foreground document-editing sessions.
 
 ## Environment
 
@@ -61,6 +68,16 @@ python "${SKILL_DIR}\scripts\mathtype_word_wps.py" check-env --probe-mathtype
 If this probe fails, remind the user to activate/license MathType or repair the installation.
 
 ## Insert Editable MathType OLE
+
+When editability or preview fidelity is suspect, first generate native MTEF for the formula source. This uses MathType's native DataObject and cleans up the embedding server after the bounded single attempt:
+
+```powershell
+python "${SKILL_DIR}\scripts\mathtype_word_wps.py" native-bridge-mtef `
+  --mathml-file "<formula.mathml>" `
+  --output-mtef "<formula.mtef>"
+```
+
+If this fails, do not keep trying GUI paste variants. Fix MathType activation/registration, simplify or correct the source MathML, or fall back to a manually checked MathType editor insertion.
 
 Use `--backend auto` by default. In auto mode the script tries the full insertion workflow with WPS first and then Word if WPS fails. Use `--backend word`, `--backend wps`, or `--com-progid ...` only when the user explicitly requests one backend; explicit backend selection disables automatic fallback.
 
@@ -129,9 +146,26 @@ Report at least:
 - `ole_objects`
 - `ole_progids`
 - `omath`
+- `ole_analysis` with `Equation Native` stream presence and native stream markers
+- `preview_analysis` with cached WMF/EMF target and question-mark risk
 - `ole_shape_width_pt`
 - `ole_shape_height_pt`
 - `body_font_pt`, `target_formula_font_pt`, `mathml_font_size_pt`, `resolved_height_pt` when a sizing operation was run
+
+For a manuscript-wide offline audit that does not open Word or MathType:
+
+```powershell
+python "${SKILL_DIR}\scripts\mathtype_word_wps.py" audit-docx-formulas `
+  --docx "<manuscript.docx>" `
+  --output-json "<formula_audit.json>" `
+  --include-details
+```
+
+Interpretation:
+
+- `preview_cache_question_marks` means the visible document preview may be bad even if the MathType editor opens normally. Regenerate the cached preview by reinserting from native MTEF or by a controlled editor update.
+- `missing_equation_native_stream`, `native_stream_contains_mathml_xml`, or "opens as one uneditable object" means the formula must be regenerated from MathML/LaTeX through the native bridge or manually rebuilt in MathType; resizing the OLE frame will not fix it.
+- If byte-level preview audit is clean but the user still sees `?`, do a bounded visual preview/render check. WMF font fallback can fail without literal `?` bytes in the file.
 
 ## WMF/EMF Fallback
 

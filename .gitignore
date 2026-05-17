@@ -24,6 +24,7 @@ work/
 *.emf
 *.bmp
 *.png
+scripts/mathtype_native_bridge.exe
 ~$*
 
 .DS_Store

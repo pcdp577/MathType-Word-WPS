@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import os
 import platform
 import re
@@ -20,6 +21,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from datetime import datetime
@@ -145,9 +147,36 @@ def apply_mathml_font_size(mathml: str, font_pt: float | None, font_family: str 
     return etree.tostring(root, encoding="unicode")
 
 
+def normalize_mathml_for_mathtype_preview(mathml: str) -> str:
+    """Replace operators that MathType OLE previews often render as '?'.
+
+    MathType may keep the formula editable while its cached WMF/EMF preview
+    loses a few Unicode operators. Keep the semantic intent but use glyphs that
+    survive the preview path more consistently.
+    """
+    stripped = mathml.strip()
+    if not stripped:
+        return mathml
+    parser = etree.XMLParser(remove_blank_text=False, recover=True)
+    try:
+        root = etree.fromstring(stripped.encode("utf-8"), parser=parser)
+    except Exception:
+        return mathml
+    if etree.QName(root).localname != "math":
+        return mathml
+    replacements = {
+        "\u00b7": "\u22c5",  # middle dot -> dot operator
+        "\u00d7": "x",       # multiplication sign is unstable in small subscripts
+    }
+    for node in root.iter():
+        if etree.QName(node).localname == "mo" and node.text in replacements:
+            node.text = replacements[node.text]
+    return etree.tostring(root, encoding="unicode")
+
+
 def mathml_clipboard_text(mathml: str) -> str:
     """Serialize MathML as ASCII numeric entities for robust MathType paste."""
-    stripped = mathml.strip()
+    stripped = normalize_mathml_for_mathtype_preview(mathml).strip()
     if not stripped:
         return mathml
     parser = etree.XMLParser(remove_blank_text=False, recover=True)
@@ -181,6 +210,133 @@ def set_css_pt(style: str | None, key: str, value_pt: float) -> str:
 
 def paragraph_text(p: etree._Element) -> str:
     return "".join(p.xpath(".//w:t/text()", namespaces=NS))
+
+
+def docx_word_part_path(target: str | None) -> str | None:
+    """Resolve a document relationship target into a zip member path."""
+    if not target:
+        return None
+    target = target.replace("\\", "/").lstrip("/")
+    while target.startswith("../"):
+        target = target[3:]
+    if target.startswith("word/"):
+        return target
+    return f"word/{target}"
+
+
+def printable_ascii_strings(data: bytes, *, min_len: int = 4) -> list[str]:
+    out: list[str] = []
+    current: list[int] = []
+    for byte in data:
+        if 32 <= byte <= 126:
+            current.append(byte)
+        else:
+            if len(current) >= min_len:
+                out.append(bytes(current).decode("ascii", errors="replace"))
+            current = []
+    if len(current) >= min_len:
+        out.append(bytes(current).decode("ascii", errors="replace"))
+    return out
+
+
+def printable_utf16le_strings(data: bytes, *, min_len: int = 4) -> list[str]:
+    out: list[str] = []
+    current: list[int] = []
+    for idx in range(0, len(data) - 1, 2):
+        code = data[idx] | (data[idx + 1] << 8)
+        if 32 <= code <= 0xD7FF:
+            current.append(code)
+        else:
+            if len(current) >= min_len:
+                out.append("".join(chr(item) for item in current))
+            current = []
+    if len(current) >= min_len:
+        out.append("".join(chr(item) for item in current))
+    return out
+
+
+def summarize_stream_bytes(data: bytes, *, max_strings: int = 12) -> dict[str, object]:
+    strings = printable_ascii_strings(data) + printable_utf16le_strings(data)
+    unique: list[str] = []
+    for item in strings:
+        item = item.strip("\x00")
+        if item and item not in unique:
+            unique.append(item)
+    lower = data.lower()
+    return {
+        "bytes": len(data),
+        "question_marks": data.count(b"?") + data.count("?".encode("utf-16le")),
+        "contains_mathml_xml": b"<math" in lower or b"<\x00m\x00a\x00t\x00h\x00" in lower,
+        "contains_mathtype_marker": b"DSMT" in data or b"MTEF" in data,
+        "strings": unique[:max_strings],
+    }
+
+
+def analyze_ole_equation_storage(data: bytes) -> dict[str, object]:
+    """Inspect MathType OLE compound storage without starting Word or MathType."""
+    info: dict[str, object] = {
+        "bytes": len(data),
+        "compound_storage": False,
+        "streams": {},
+        "errors": [],
+    }
+    if not is_windows():
+        info["errors"] = ["ole_storage_inspection_requires_windows"]
+        return info
+    temp_path: str | None = None
+    try:
+        import pythoncom
+
+        handle = tempfile.NamedTemporaryFile(prefix="mathtype_ole_", suffix=".bin", delete=False)
+        temp_path = handle.name
+        handle.write(data)
+        handle.close()
+        flags = getattr(pythoncom, "STGM_READ", 0) | getattr(pythoncom, "STGM_SHARE_EXCLUSIVE", 0x10)
+        storage = pythoncom.StgOpenStorage(temp_path, None, flags)
+        info["compound_storage"] = True
+        streams: dict[str, object] = {}
+        for stream_name in ("\x01Ole", "\x01CompObj", "\x03ObjInfo", "Equation Native"):
+            try:
+                stream = storage.OpenStream(stream_name, None, flags, 0)
+                stat = stream.Stat()
+                size = int(stat.get("size", 0) if isinstance(stat, dict) else stat[2])
+                payload = stream.Read(size)
+                streams[stream_name.encode("unicode_escape").decode("ascii")] = summarize_stream_bytes(payload)
+            except Exception as exc:
+                streams[stream_name.encode("unicode_escape").decode("ascii")] = {
+                    "present": False,
+                    "error": str(exc),
+                }
+        info["streams"] = streams
+        native = streams.get("Equation Native")
+        if isinstance(native, dict):
+            info["native_stream_bytes"] = native.get("bytes", 0)
+            info["native_contains_mathml_xml"] = native.get("contains_mathml_xml", False)
+            info["native_contains_mathtype_marker"] = native.get("contains_mathtype_marker", False)
+            info["native_question_marks"] = native.get("question_marks", 0)
+    except Exception as exc:
+        errors = info.setdefault("errors", [])
+        if isinstance(errors, list):
+            errors.append(str(exc))
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+    return info
+
+
+def analyze_preview_part(data: bytes, target: str | None) -> dict[str, object]:
+    suffix = Path(target or "").suffix.lower()
+    return {
+        "target": target,
+        "bytes": len(data),
+        "suffix": suffix,
+        "question_marks": data.count(b"?") + data.count("?".encode("utf-16le")),
+        "wmf_like": suffix == ".wmf" or data.startswith(b"\xd7\xcd\xc6\x9a"),
+        "emf_like": suffix == ".emf" or data.startswith(b"\x01\x00\x00\x00"),
+    }
 
 
 def paragraph_style_id(p: etree._Element) -> str | None:
@@ -389,6 +545,15 @@ def print_size_info(size_info: dict[str, object]) -> None:
         print(f"{key}={size_info[key]}")
 
 
+def safe_print(text: object) -> None:
+    rendered = str(text)
+    try:
+        print(rendered)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        sys.stdout.buffer.write((rendered + "\n").encode(encoding, errors="backslashreplace"))
+
+
 def is_windows() -> bool:
     return os.name == "nt"
 
@@ -487,17 +652,177 @@ def cleanup_leftovers(args: argparse.Namespace) -> None:
     if not is_windows():
         print("cleanup=skipped reason=not-windows")
         return
-    subprocess.run(
+    cleanup_wps_preview = bool(getattr(args, "cleanup_wps_preview", True))
+    command = (
+        "$deadline = (Get-Date).AddSeconds(6); "
+        "do { "
+        "  Get-Process MathType,MathTypeLib -ErrorAction SilentlyContinue | "
+        "    Stop-Process -Force -ErrorAction SilentlyContinue; "
+        "  Start-Sleep -Milliseconds 500; "
+        "  $left = @(Get-Process MathType,MathTypeLib -ErrorAction SilentlyContinue); "
+        "} while ($left.Count -gt 0 -and (Get-Date) -lt $deadline); "
+        "$left | Select-Object Id,ProcessName | ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True)
+    leftovers = (result.stdout or "").strip()
+    if leftovers and leftovers != "null":
+        print(f"cleanup=partial processes=MathType,MathTypeLib leftovers={leftovers}")
+    else:
+        print("cleanup=done processes=MathType,MathTypeLib")
+    if cleanup_wps_preview:
+        wps_command = (
+            "$pattern = '(/Preview|-Embedding|pdfwspvimp|jsapibrowser)'; "
+            "$targets = @(Get-CimInstance Win32_Process | "
+            "  Where-Object { $_.Name -eq 'wps.exe' -and $_.CommandLine -match $pattern }); "
+            "$stopped = @(); "
+            "foreach ($p in $targets) { "
+            "  try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $stopped += $p.ProcessId } catch {} "
+            "} "
+            "[pscustomobject]@{ stopped=$stopped; count=$stopped.Count } | ConvertTo-Json -Compress"
+        )
+        wps_result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", wps_command],
+            capture_output=True,
+            text=True,
+        )
+        wps_info = (wps_result.stdout or "").strip()
+        print(f"cleanup=done processes=wps_preview_helpers info={wps_info or '{}'}")
+
+
+def recover_text_input(args: argparse.Namespace) -> None:
+    """Restart Windows text-input plumbing after OLE/IME focus gets stuck."""
+
+    if not is_windows():
+        print("recover_text_input=skipped reason=not-windows")
+        return
+    stop_wetype = bool(getattr(args, "stop_wetype", False))
+    stop_office_embedding = bool(getattr(args, "stop_office_embedding", True))
+    names = ["TextInputHost", "ctfmon"]
+    if stop_wetype:
+        names = ["wetype_server", "wetype_update", "wetype_service"] + names
+    quoted_names = "@(" + ",".join("'" + name + "'" for name in names) + ")"
+    command = (
+        f"$names = {quoted_names}; "
+        "$stopped = @(); "
+        "if ("
+        + ("$true" if stop_office_embedding else "$false")
+        + ") { "
+        "  Get-CimInstance Win32_Process | "
+        "    Where-Object { $_.Name -match '^(VISIO|WINWORD)\\.EXE$' -and $_.CommandLine -match '(/Automation|-Embedding)' } | "
+        "    ForEach-Object { "
+        "      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; "
+        "            $stopped += ($_.Name + ':' + [string]$_.ProcessId) } catch {} "
+        "    } "
+        "} "
+        "foreach ($name in $names) { "
+        "  Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object { "
+        "    try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; "
+        "          $stopped += ($_.ProcessName + ':' + [string]$_.Id) } catch {} "
+        "  } "
+        "} "
+        "Start-Sleep -Milliseconds 500; "
+        "Start-Process -FilePath \"$env:WINDIR\\System32\\ctfmon.exe\"; "
+        "Start-Sleep -Milliseconds 500; "
+        "$live = @(Get-CimInstance Win32_Process | "
+        "  Where-Object { $_.Name -match '^(ctfmon|TextInputHost|wetype_server|wetype_service|wetype_update)\\.exe$|^(VISIO|WINWORD)\\.EXE$' } | "
+        "  Select-Object Name,ProcessId); "
+        "[pscustomobject]@{ stopped=$stopped; stop_wetype="
+        + ("$true" if stop_wetype else "$false")
+        + "; stop_office_embedding="
+        + ("$true" if stop_office_embedding else "$false")
+        + "; live=$live } | ConvertTo-Json -Depth 4 -Compress"
+    )
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True)
+    if result.stderr.strip():
+        print(result.stderr.strip(), file=sys.stderr)
+    print(f"recover_text_input={result.stdout.strip() or '{}'}")
+
+
+def script_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def find_csc_exe() -> Path | None:
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    candidates = [
+        windir / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe",
+        windir / "Microsoft.NET" / "Framework" / "v4.0.30319" / "csc.exe",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    which = shutil.which("csc.exe")
+    return Path(which).resolve() if which else None
+
+
+def ensure_native_bridge_built() -> Path:
+    source = script_dir() / "mathtype_native_bridge.cs"
+    exe = script_dir() / "mathtype_native_bridge.exe"
+    if exe.exists() and exe.stat().st_mtime >= source.stat().st_mtime:
+        return exe
+    csc = find_csc_exe()
+    if csc is None:
+        raise RuntimeError("Cannot find csc.exe to build the MathType native bridge.")
+    result = subprocess.run(
         [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            "Get-Process MathType,MathTypeLib -ErrorAction SilentlyContinue | Stop-Process -Force",
+            str(csc),
+            "/nologo",
+            "/target:exe",
+            "/platform:x64",
+            "/r:System.Windows.Forms.dll",
+            f"/out:{exe}",
+            str(source),
         ],
         capture_output=True,
         text=True,
     )
-    print("cleanup=done processes=MathType,MathTypeLib")
+    if result.returncode != 0:
+        raise RuntimeError(f"native bridge build failed:\n{result.stdout}\n{result.stderr}")
+    return exe
+
+
+def native_bridge_mtef(args: argparse.Namespace) -> None:
+    """Convert MathML to MathType EF/MTEF through MathType's native DataObject."""
+    if not is_windows():
+        raise RuntimeError("native-bridge-mtef requires Windows and MathType.")
+    mathml_file = Path(args.mathml_file).resolve()
+    output_mtef = Path(args.output_mtef).resolve()
+    if not mathml_file.exists():
+        raise FileNotFoundError(mathml_file)
+    output_mtef.parent.mkdir(parents=True, exist_ok=True)
+    exe = ensure_native_bridge_built()
+    bridge_input = mathml_file
+    temp_input: Path | None = None
+    if args.normalize_preview_operators:
+        temp_dir = Path(tempfile.mkdtemp(prefix="mathtype_native_bridge_"))
+        temp_input = temp_dir / mathml_file.name
+        temp_input.write_text(normalize_mathml_for_mathtype_preview(read_text(mathml_file)), encoding="utf-8")
+        bridge_input = temp_input
+    try:
+        result = subprocess.run(
+            [
+                str(exe),
+                "--mathml-file",
+                str(bridge_input),
+                "--output-mtef",
+                str(output_mtef),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=float(args.timeout_seconds),
+        )
+        if result.stdout.strip():
+            print(result.stdout.strip())
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"native bridge failed with exit code {result.returncode}")
+    finally:
+        if temp_input is not None:
+            shutil.rmtree(temp_input.parent, ignore_errors=True)
+        if args.cleanup_mathtype:
+            time.sleep(1.0)
+            cleanup_leftovers(argparse.Namespace())
 
 
 def check_com_available(progid: str, *, probe: bool) -> tuple[bool, str]:
@@ -790,6 +1115,7 @@ def make_wmf(args: argparse.Namespace) -> None:
         mathml = latex_to_mathml(args.latex)
     else:
         raise SystemExit("Provide --mathml-file, --mathml, --latex-file, or --latex.")
+    mathml = normalize_mathml_for_mathtype_preview(mathml)
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1219,6 +1545,11 @@ def inspect_docx_path(docx: Path, paragraph_index: int) -> dict[str, object]:
         ole_objects = p.findall(".//o:OLEObject", namespaces=NS)
         ole_rids = [node.get(R + "id") for node in ole_objects]
         v_shapes = p.findall(".//v:shape", namespaces=NS)
+        preview_rids = [node.get(R + "id") for node in p.findall(".//v:imagedata", namespaces=NS)]
+        preview_rids.extend(node.get(R + "embed") for node in p.findall(".//a:blip", namespaces=NS))
+        preview_rids = [rid for rid in preview_rids if rid]
+        ole_targets = [relmap.get(rid) for rid in ole_rids]
+        preview_targets = [relmap.get(rid) for rid in preview_rids]
         info: dict[str, object] = {
             "docx": str(docx),
             "paragraph_index": paragraph_index,
@@ -1228,10 +1559,35 @@ def inspect_docx_path(docx: Path, paragraph_index: int) -> dict[str, object]:
             "blips": len(p.findall(".//a:blip", namespaces=NS)),
             "ole_objects": len(ole_objects),
             "ole_progids": [node.get("ProgID") for node in ole_objects],
-            "ole_targets": [relmap.get(rid) for rid in ole_rids],
+            "ole_targets": ole_targets,
+            "preview_targets": preview_targets,
             "omath": len(p.findall(".//m:oMath", namespaces=NS)),
             "total_omath": len(root.findall(".//m:oMath", namespaces=NS)),
         }
+        ole_analyses: list[dict[str, object]] = []
+        for rid, rel in zip(ole_rids, ole_targets):
+            target = rel[1] if rel else None
+            part = docx_word_part_path(target)
+            entry: dict[str, object] = {"rid": rid, "target": target, "part": part}
+            if part and part in zf.namelist():
+                entry.update(analyze_ole_equation_storage(zf.read(part)))
+            else:
+                entry["errors"] = [f"missing_part:{part}"]
+            ole_analyses.append(entry)
+        if ole_analyses:
+            info["ole_analysis"] = ole_analyses
+        preview_analyses: list[dict[str, object]] = []
+        for rid, rel in zip(preview_rids, preview_targets):
+            target = rel[1] if rel else None
+            part = docx_word_part_path(target)
+            entry = {"rid": rid, "target": target, "part": part}
+            if part and part in zf.namelist():
+                entry.update(analyze_preview_part(zf.read(part), target))
+            else:
+                entry["errors"] = [f"missing_part:{part}"]
+            preview_analyses.append(entry)
+        if preview_analyses:
+            info["preview_analysis"] = preview_analyses
         if v_shapes:
             style = v_shapes[0].get("style", "")
             parsed_style = parse_css_pt(style)
@@ -1267,8 +1623,11 @@ def print_inspection(info: dict[str, object]) -> None:
         "ole_objects",
         "ole_progids",
         "ole_targets",
+        "preview_targets",
         "omath",
         "total_omath",
+        "ole_analysis",
+        "preview_analysis",
         "ole_shape_width_pt",
         "ole_shape_height_pt",
         "ole_shape_style",
@@ -1279,7 +1638,7 @@ def print_inspection(info: dict[str, object]) -> None:
         "ind",
     ):
         if key in info:
-            print(f"{key}={info[key]}")
+            safe_print(f"{key}={info[key]}")
 
 
 def validate_wps_open(docx: Path) -> str:
@@ -1696,6 +2055,7 @@ def replace_docx_ole(args: argparse.Namespace) -> None:
         mathml = latex_to_mathml(str(args.latex))
     else:
         raise RuntimeError("Provide --mathml-file, --mathml, --latex-file, or --latex.")
+    mathml = normalize_mathml_for_mathtype_preview(mathml)
 
     size_info = resolve_formula_object_size(
         output,
@@ -1753,6 +2113,9 @@ def replace_docx_ole(args: argparse.Namespace) -> None:
             window_timeout=float(args.window_timeout),
         )
         print(f"reopen_screenshot={Path(args.reopen_screenshot).resolve()}")
+    if args.cleanup_mathtype:
+        cleanup_leftovers(args)
+        wait_for_exclusive_file(output, timeout=float(args.window_timeout))
 
 
 def resize_docx_ole(args: argparse.Namespace) -> None:
@@ -1835,6 +2198,100 @@ def inspect_docx(args: argparse.Namespace) -> None:
         print(f"wps_open={validate_wps_open(Path(args.docx).resolve())}")
 
 
+def audit_formula_info(info: dict[str, object]) -> dict[str, object]:
+    warnings: list[str] = []
+    progids = [item for item in info.get("ole_progids", []) if item]
+    if not progids:
+        warnings.append("missing_ole_object")
+    elif any(item != "Equation.DSMT4" for item in progids):
+        warnings.append(f"unexpected_ole_progid:{progids}")
+    if int(info.get("omath", 0) or 0):
+        warnings.append("contains_omath_not_mathtype_ole_only")
+    if int(info.get("blips", 0) or 0):
+        warnings.append("contains_drawing_blip_image")
+
+    native_ok = False
+    for entry in info.get("ole_analysis", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("compound_storage"):
+            warnings.append(f"ole_not_compound_storage:{entry.get('part')}")
+            continue
+        native_bytes = int(entry.get("native_stream_bytes", 0) or 0)
+        if native_bytes <= 0:
+            warnings.append(f"missing_equation_native_stream:{entry.get('part')}")
+        else:
+            native_ok = True
+        if entry.get("native_contains_mathml_xml"):
+            warnings.append(f"native_stream_contains_mathml_xml:{entry.get('part')}")
+        if int(entry.get("native_question_marks", 0) or 0):
+            warnings.append(f"native_stream_question_marks:{entry.get('part')}")
+    if progids and not native_ok:
+        warnings.append("no_verified_mathtype_native_stream")
+
+    preview_q = 0
+    for entry in info.get("preview_analysis", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        preview_q += int(entry.get("question_marks", 0) or 0)
+    if preview_q:
+        warnings.append(f"preview_cache_question_marks:{preview_q}")
+
+    return {
+        "paragraph_index": info.get("paragraph_index"),
+        "text": info.get("text"),
+        "ole_progids": info.get("ole_progids"),
+        "ole_targets": info.get("ole_targets"),
+        "preview_targets": info.get("preview_targets"),
+        "ole_shape_width_pt": info.get("ole_shape_width_pt"),
+        "ole_shape_height_pt": info.get("ole_shape_height_pt"),
+        "warnings": warnings,
+        "ok": not warnings,
+    }
+
+
+def audit_docx_formulas(args: argparse.Namespace) -> None:
+    docx = Path(args.docx).resolve()
+    with ZipFile(docx, "r") as zf:
+        root = etree.fromstring(zf.read("word/document.xml"))
+        paras = root.findall(".//w:body/w:p", namespaces=NS)
+        formula_indices = [
+            idx
+            for idx, p in enumerate(paras)
+            if p.findall(".//o:OLEObject", namespaces=NS)
+            or p.findall(".//m:oMath", namespaces=NS)
+            or p.findall(".//v:imagedata", namespaces=NS)
+        ]
+    if args.start_index is not None:
+        formula_indices = [idx for idx in formula_indices if idx >= int(args.start_index)]
+    if args.end_index is not None:
+        formula_indices = [idx for idx in formula_indices if idx <= int(args.end_index)]
+
+    details = [inspect_docx_path(docx, idx) for idx in formula_indices]
+    summary = [audit_formula_info(info) for info in details]
+    report = {
+        "docx": str(docx),
+        "formula_count": len(summary),
+        "ok_count": sum(1 for item in summary if item.get("ok")),
+        "warning_count": sum(1 for item in summary if item.get("warnings")),
+        "summary": summary,
+        "details": details if args.include_details else [],
+    }
+    if args.output_json:
+        output = Path(args.output_json).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"output_json={output}")
+    print(f"docx={docx}")
+    print(f"formula_count={report['formula_count']}")
+    print(f"ok_count={report['ok_count']}")
+    print(f"warning_count={report['warning_count']}")
+    for item in summary:
+        warnings = item.get("warnings") or []
+        if warnings:
+            print(f"paragraph_index={item.get('paragraph_index')} text={item.get('text')} warnings={warnings}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1846,8 +2303,16 @@ def build_parser() -> argparse.ArgumentParser:
     env.add_argument("--probe-mathtype", action="store_true", help="Launch MathType briefly to detect runtime or activation/license problems.")
     env.set_defaults(func=check_env)
 
-    clean = sub.add_parser("cleanup-leftovers", help="Stop leftover MathType/MathTypeLib background processes.")
+    clean = sub.add_parser("cleanup-leftovers", help="Stop leftover MathType/MathTypeLib and safe WPS preview/embedding helper processes.")
+    clean.add_argument("--cleanup-wps-preview", dest="cleanup_wps_preview", action="store_true", default=True)
+    clean.add_argument("--no-cleanup-wps-preview", dest="cleanup_wps_preview", action="store_false")
     clean.set_defaults(func=cleanup_leftovers)
+
+    recover = sub.add_parser("recover-text-input", help="Restart Windows text input after OLE/IME focus gets stuck.")
+    recover.add_argument("--stop-wetype", action="store_true", help="Also stop Tencent WeType processes before restarting ctfmon/TextInputHost.")
+    recover.add_argument("--stop-office-embedding", dest="stop_office_embedding", action="store_true", default=True, help="Stop hidden VISIO/WINWORD /Automation -Embedding OLE servers before restarting text input.")
+    recover.add_argument("--no-stop-office-embedding", dest="stop_office_embedding", action="store_false")
+    recover.set_defaults(func=recover_text_input)
 
     make = sub.add_parser("make-wmf", help="Create WMF/EMF from MathType-rendered MathML or LaTeX.")
     make.add_argument("--mathml-file")
@@ -1860,6 +2325,16 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--wait-seconds", type=float, default=1.2)
     make.add_argument("--keep-window", action="store_true")
     make.set_defaults(func=make_wmf)
+
+    native = sub.add_parser("native-bridge-mtef", help="Convert MathML to MathType EF/MTEF with MathType's native DataObject and then clean up the embedding server.")
+    native.add_argument("--mathml-file", required=True)
+    native.add_argument("--output-mtef", required=True)
+    native.add_argument("--timeout-seconds", type=float, default=30.0)
+    native.add_argument("--normalize-preview-operators", dest="normalize_preview_operators", action="store_true", default=True)
+    native.add_argument("--no-normalize-preview-operators", dest="normalize_preview_operators", action="store_false")
+    native.add_argument("--cleanup-mathtype", dest="cleanup_mathtype", action="store_true", default=True)
+    native.add_argument("--no-cleanup-mathtype", dest="cleanup_mathtype", action="store_false")
+    native.set_defaults(func=native_bridge_mtef)
 
     rep = sub.add_parser("replace-docx", help="Insert or resize a centered formula image with right equation number.")
     rep.add_argument("--docx", required=True)
@@ -1909,7 +2384,10 @@ def build_parser() -> argparse.ArgumentParser:
     ole.add_argument("--visible-app", action="store_true", help="Deprecated/no-op: Word/WPS COM is always opened hidden.")
     ole.add_argument("--foreground-editor", action="store_true", help="Bring MathType editor to foreground. Word/WPS stays hidden.")
     ole.add_argument("--allow-downscale-ole", action="store_true", help="Allow the OLE frame to shrink below MathType's natural inserted height. Default: preserve natural height to avoid tiny formulas.")
-    ole.add_argument("--cleanup-mathtype", action="store_true")
+    ole.add_argument("--cleanup-mathtype", dest="cleanup_mathtype", action="store_true", default=True)
+    ole.add_argument("--no-cleanup-mathtype", dest="cleanup_mathtype", action="store_false")
+    ole.add_argument("--cleanup-wps-preview", dest="cleanup_wps_preview", action="store_true", default=True)
+    ole.add_argument("--no-cleanup-wps-preview", dest="cleanup_wps_preview", action="store_false")
     ole.add_argument("--backup", action="store_true")
     ole.add_argument("--validate-wps", action="store_true")
     ole.set_defaults(func=replace_docx_ole)
@@ -1936,6 +2414,14 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("--one-based", action="store_true")
     ins.add_argument("--validate-wps", action="store_true")
     ins.set_defaults(func=inspect_docx)
+
+    audit = sub.add_parser("audit-docx-formulas", help="Offline audit MathType OLE native streams and cached previews without opening Word/MathType.")
+    audit.add_argument("--docx", required=True)
+    audit.add_argument("--output-json", default="")
+    audit.add_argument("--include-details", action="store_true", help="Include full OLE stream summaries in the JSON report.")
+    audit.add_argument("--start-index", type=int)
+    audit.add_argument("--end-index", type=int)
+    audit.set_defaults(func=audit_docx_formulas)
     return parser
 
 

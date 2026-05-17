@@ -14,7 +14,7 @@
 - 自动选择 WPS 或 Microsoft Word COM 后端。
 - 公式编号保持为普通文档文本，并放在右侧对齐。
 - 根据正文默认字号设置 MathType 内部公式主字符大小和 Times New Roman 字体族，再匹配 OLE 外框尺寸，避免只缩放外框造成公式视觉不统一。
-- 检查 DOCX XML，确认公式是否为 OLE 对象、图片、OMML 或其它形式。
+- 检查 DOCX XML、MathType 原生 OLE 流和缓存 WMF/EMF 预览，确认公式是否为 OLE 对象、图片、OMML 或其它形式。
 - 在明确需要时，可使用 WMF/EMF 矢量图片作为后备方案。
 
 ## 在“图片转可编辑公式”流程中的位置
@@ -79,6 +79,16 @@ $env:MATHTYPE_EXE = "C:\Path\To\MathType.exe"
 
 ## 插入可编辑公式
 
+如果怀疑公式不可编辑、双击后像一个整体对象，或者正文预览中出现问号，先把源 MathML 转成 MathType 原生 `MathType EF/MTEF`。这一步不走“打开 MathType 编辑器再粘贴 MathML”的脆弱路径，而是直接调用 MathType 原生 DataObject：
+
+```powershell
+python .\scripts\mathtype_word_wps.py native-bridge-mtef `
+  --mathml-file ".\formula11.mathml" `
+  --output-mtef ".\formula11.mtef"
+```
+
+原生桥每次只做一次有超时的转换，结束后会清理 MathType embedding 后台进程。不要再用批量 GUI 探测、宏循环或反复 `Application.Run` 去试公式。
+
 ```powershell
 python .\scripts\mathtype_word_wps.py replace-docx-ole `
   --docx ".\manuscript.docx" `
@@ -95,7 +105,9 @@ python .\scripts\mathtype_word_wps.py replace-docx-ole `
 
 正常处理时，Word 和 WPS 都会通过 COM 后台隐藏打开，不应该弹出前台窗口。
 
-尺寸规则：`--formula-font-scale 0.8` 控制的是 MathType 内部主字符字号，不只是外层 OLE 框大小；默认公式字体族为 `Times New Roman`。遇到分式、大型求和、多行对齐等复杂公式时，OLE 外框只作为最小容器，默认不会把对象压缩到低于 MathType 自然插入高度，除非显式传入 `--allow-downscale-ole`。粘贴前 MathML 会转换为 ASCII 数字实体，避免希腊字母、`×`、`·`、`∑` 等符号在 MathType 粘贴路径里变成问号。
+插入完成后，工具会清理 MathType/MathTypeLib 以及安全范围内的 WPS 预览/嵌入 helper 进程，并等待目标文档重新变成可写状态。这个检查很重要：公式本身可能已经可编辑、显示也正确，但残留的 OLE 预览 helper 仍可能让用户在前台编辑器里无法正常输入。
+
+尺寸规则：`--formula-font-scale 0.8` 控制的是 MathType 内部主字符字号，不只是外层 OLE 框大小；默认公式字体族为 `Times New Roman`。遇到分式、大型求和、多行对齐等复杂公式时，OLE 外框只作为最小容器，默认不会把对象压缩到低于 MathType 自然插入高度，除非显式传入 `--allow-downscale-ole`。粘贴前 MathML 会先做 MathType/Word 预览稳定化，再转换为 ASCII 数字实体：例如标量乘法中点从 U+00B7 归一为点乘 U+22C5，卷积核尺寸或形状中的乘号可归一为 ASCII `x`，避免嵌入对象可编辑但 Word/WPS 正文预览显示 `?`。
 
 ## 检查插入结果
 
@@ -111,6 +123,29 @@ python .\scripts\mathtype_word_wps.py inspect-docx `
 - `ole_progids=['Equation.DSMT4']`
 - `blips=0`
 - `omath=0`
+- `ole_analysis` 中存在 `Equation Native` 原生流
+- 缓存 WMF/EMF 预览中没有明显 `preview_cache_question_marks` 风险
+
+整篇手稿可以用离线审计，不会打开 Word 或 MathType：
+
+```powershell
+python .\scripts\mathtype_word_wps.py audit-docx-formulas `
+  --docx ".\manuscript.docx" `
+  --output-json ".\formula_audit.json" `
+  --include-details
+```
+
+注意区分两层问题：MathType OLE 原生内容和文档里显示出来的 WMF/EMF 预览不是一回事。如果正文里有问号，但双击进入 MathType 后内容正常，优先用归一化后的 MathML/MTEF 重新生成缓存预览；如果双击进入 MathType 后公式本身就是一个整体、无法逐个选中字母数字，那必须从 MathML/LaTeX 重新生成原生 MTEF 或在 MathType 里重建，单纯调整 OLE 外框大小无效。`preview_cache_question_marks` 只能作为风险提示，不是最终视觉结论；WMF/EMF 字节扫描可能误报，最终验收必须导出 Word/PDF 页面截图确认正文层是否还有可见问号。
+
+如果运行后用户无法在手稿里输入文本，第一步就是运行 `cleanup-leftovers`，然后确认 `.docx` 能被独占读写打开。只要隐藏的 OLE、MathType、Word 或 WPS 预览 helper 仍在影响前台编辑，就不能把公式任务判定为完成。
+
+如果不是某一个文档不能输入，而是浏览器、Codex、WPS 等任何输入框都不能输入，就不要继续按文档锁排查。这通常是 Windows 输入法/文本服务卡住，尤其是 `ctfmon`、`TextInputHost`、第三方输入法 hook，或隐藏的 Office OLE 自动化进程例如 `VISIO.EXE /Automation -Embedding` 把输入法拉进了自己的进程树。此时运行：
+
+```powershell
+python .\scripts\mathtype_word_wps.py recover-text-input --stop-wetype
+```
+
+该命令会重启 Windows 文本输入链，并在需要时停止腾讯 WeType 相关进程。
 
 ## 在 Cursor、Claude Code 或其它 Agent 中使用
 
