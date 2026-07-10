@@ -1,5 +1,5 @@
 ---
-name: "MathType-Word/WPS"
+name: "mathtype-word-wps"
 description: "Use when a manuscript formula must be inserted, replaced, inspected, or resized in a DOCX document as an editable MathType OLE equation through Microsoft Word or WPS, with optional WMF/EMF fallback and body-font-matched formula sizing."
 ---
 
@@ -31,6 +31,17 @@ For image-to-editable-formula work, this skill does not do formula OCR. First ob
 - If MathType is missing, not registered, or appears unlicensed/not activated, stop and tell the user to install, repair, register, or activate MathType before retrying.
 - Keep a backup before modifying a live manuscript.
 - Use `cleanup-leftovers` after any failed or suspicious run. It should stop MathType/MathTypeLib and safe WPS preview/embedding helpers, but it must not kill ordinary foreground document-editing sessions.
+
+## Manuscript Rebuild Gates
+
+- Do not assume an OpenXML body-paragraph index is identical to the Word/WPS COM `Paragraphs` index. Before any batch insertion, run one scratch-copy placement probe and verify the resulting OLE lands beside the intended equation number. If the probe lands elsewhere, stop direct COM insertion.
+- When direct COM indexing is unstable, generate each formula in an isolated one-paragraph DOCX, verify its native MathType stream and preview, then transplant the complete OLE run, relationship, native object, and WMF/EMF part into an exact OpenXML marker. Remap relationship IDs, shape IDs, and OLE object IDs; remove orphaned parts; audit the assembled candidate before touching the live manuscript.
+- Keep a source-to-object ledger: formula number, LaTeX/MathML source, target paragraph marker, OLE package part, preview part, and audit result must agree. A valid OLE shell attached to the wrong source is a failed formula.
+- Treat an unexpectedly narrow or nearly blank OLE frame as suspicious even when `Equation.DSMT4`, the native stream, and the preview audit otherwise pass. Compare the frame against a source-specific minimum width or a rendered preview before accepting it.
+- Normalize MathType's internal main-character font against the first accepted equations in the manuscript. Compare character size, not only OLE frame height; integrals, sums, fractions, and tall delimiters retain their natural operator height.
+- Use one logical relation per single-line OLE paragraph when the manuscript style numbers equations independently. Split multi-line aligned blocks into consecutive OLE objects instead of hiding several numbered relations inside one oversized object.
+- Raw code-style mathematics in body prose, including underscore subscripts, is not an acceptable fallback. Use true italic, subscript, and superscript Word runs for short inline symbols or a separate MathType OLE for display mathematics.
+- A cached question-mark warning always requires a rendered Word/PDF check. A visible `?` is a hard failure and must be regenerated from glyph-normalized source; a byte-only warning may be recorded as non-blocking only when the exported formula is visibly correct.
 
 ## Environment
 
@@ -158,7 +169,9 @@ For a manuscript-wide offline audit that does not open Word or MathType:
 python "${SKILL_DIR}\scripts\mathtype_word_wps.py" audit-docx-formulas `
   --docx "<manuscript.docx>" `
   --output-json "<formula_audit.json>" `
-  --include-details
+  --include-details `
+  --min-ole-width-pt 18 `
+  --min-ole-height-pt 8
 ```
 
 Interpretation:
@@ -166,6 +179,7 @@ Interpretation:
 - `preview_cache_question_marks` means the visible document preview may be bad even if the MathType editor opens normally. Regenerate the cached preview by reinserting from native MTEF or by a controlled editor update.
 - `missing_equation_native_stream`, `native_stream_contains_mathml_xml`, or "opens as one uneditable object" means the formula must be regenerated from MathML/LaTeX through the native bridge or manually rebuilt in MathType; resizing the OLE frame will not fix it.
 - If byte-level preview audit is clean but the user still sees `?`, do a bounded visual preview/render check. WMF font fallback can fail without literal `?` bytes in the file.
+- `--min-ole-width-pt` and `--min-ole-height-pt` are heuristic blank-object gates. Set either value to `0` to disable that dimension for intentionally tiny one-symbol formulas, and use a source-specific threshold for generated formula assets.
 
 ## WMF/EMF Fallback
 

@@ -15,6 +15,7 @@
 - 公式编号保持为普通文档文本，并放在右侧对齐。
 - 根据正文默认字号设置 MathType 内部公式主字符大小和 Times New Roman 字体族，再匹配 OLE 外框尺寸，避免只缩放外框造成公式视觉不统一。
 - 检查 DOCX XML、MathType 原生 OLE 流和缓存 WMF/EMF 预览，确认公式是否为 OLE 对象、图片、OMML 或其它形式。
+- 批量修改前验证段落定位；Word/WPS COM 段落索引不稳定时，支持以单段公式资产完成受控重建与包级移植。
 - 在明确需要时，可使用 WMF/EMF 矢量图片作为后备方案。
 
 ## 在“图片转可编辑公式”流程中的位置
@@ -132,8 +133,14 @@ python .\scripts\mathtype_word_wps.py inspect-docx `
 python .\scripts\mathtype_word_wps.py audit-docx-formulas `
   --docx ".\manuscript.docx" `
   --output-json ".\formula_audit.json" `
-  --include-details
+  --include-details `
+  --min-ole-width-pt 18 `
+  --min-ole-height-pt 8
 ```
+
+尺寸阈值只用于提示公式对象可能接近空白。合法的单字符小公式可把相应阈值设为 `0`；批量生成资产时，也可以根据已知的最小合理尺寸提高阈值。
+
+批量替换前应先在手稿副本中测试一个公式，确认 OLE 落在预期编号旁。OpenXML 正文索引与 Word/WPS COM 段落索引可能并不一致。探针落点错误时，应改为在单段 DOCX 中逐式生成并验证公式，再把完整 OLE 关系、原生对象和缓存预览移植到精确的 OpenXML 标记位置。正式替换前必须维护公式编号与源文件台账，并审计组装后的候选手稿。
 
 注意区分两层问题：MathType OLE 原生内容和文档里显示出来的 WMF/EMF 预览不是一回事。如果正文里有问号，但双击进入 MathType 后内容正常，优先用归一化后的 MathML/MTEF 重新生成缓存预览；如果双击进入 MathType 后公式本身就是一个整体、无法逐个选中字母数字，那必须从 MathML/LaTeX 重新生成原生 MTEF 或在 MathType 里重建，单纯调整 OLE 外框大小无效。`preview_cache_question_marks` 只能作为风险提示，不是最终视觉结论；WMF/EMF 字节扫描可能误报，最终验收必须导出 Word/PDF 页面截图确认正文层是否还有可见问号。
 
@@ -166,7 +173,7 @@ python .\scripts\mathtype_word_wps.py recover-text-input --stop-wetype
 把仓库克隆或复制到 Codex skills 目录：
 
 ```powershell
-git clone https://github.com/liuyifan577/MathType-Word-WPS.git "$env:USERPROFILE\.codex\skills\MathType-Word-WPS"
+git clone https://github.com/pcdp577/MathType-Word-WPS.git "$env:USERPROFILE\.codex\skills\MathType-Word-WPS"
 ```
 
 安装后重启 Codex。

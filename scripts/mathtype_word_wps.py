@@ -2198,7 +2198,11 @@ def inspect_docx(args: argparse.Namespace) -> None:
         print(f"wps_open={validate_wps_open(Path(args.docx).resolve())}")
 
 
-def audit_formula_info(info: dict[str, object]) -> dict[str, object]:
+def audit_formula_info(
+    info: dict[str, object],
+    min_ole_width_pt: float = 18.0,
+    min_ole_height_pt: float = 8.0,
+) -> dict[str, object]:
     warnings: list[str] = []
     progids = [item for item in info.get("ole_progids", []) if item]
     if not progids:
@@ -2237,6 +2241,13 @@ def audit_formula_info(info: dict[str, object]) -> dict[str, object]:
     if preview_q:
         warnings.append(f"preview_cache_question_marks:{preview_q}")
 
+    width_pt = float(info.get("ole_shape_width_pt", 0) or 0)
+    height_pt = float(info.get("ole_shape_height_pt", 0) or 0)
+    if progids and min_ole_width_pt > 0 and 0 < width_pt < min_ole_width_pt:
+        warnings.append(f"suspiciously_narrow_ole_frame:{width_pt:g}pt")
+    if progids and min_ole_height_pt > 0 and 0 < height_pt < min_ole_height_pt:
+        warnings.append(f"suspiciously_short_ole_frame:{height_pt:g}pt")
+
     return {
         "paragraph_index": info.get("paragraph_index"),
         "text": info.get("text"),
@@ -2268,7 +2279,14 @@ def audit_docx_formulas(args: argparse.Namespace) -> None:
         formula_indices = [idx for idx in formula_indices if idx <= int(args.end_index)]
 
     details = [inspect_docx_path(docx, idx) for idx in formula_indices]
-    summary = [audit_formula_info(info) for info in details]
+    summary = [
+        audit_formula_info(
+            info,
+            min_ole_width_pt=float(args.min_ole_width_pt),
+            min_ole_height_pt=float(args.min_ole_height_pt),
+        )
+        for info in details
+    ]
     report = {
         "docx": str(docx),
         "formula_count": len(summary),
@@ -2421,6 +2439,18 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--include-details", action="store_true", help="Include full OLE stream summaries in the JSON report.")
     audit.add_argument("--start-index", type=int)
     audit.add_argument("--end-index", type=int)
+    audit.add_argument(
+        "--min-ole-width-pt",
+        type=float,
+        default=18.0,
+        help="Warn when an OLE frame is narrower than this value; use 0 to disable.",
+    )
+    audit.add_argument(
+        "--min-ole-height-pt",
+        type=float,
+        default=8.0,
+        help="Warn when an OLE frame is shorter than this value; use 0 to disable.",
+    )
     audit.set_defaults(func=audit_docx_formulas)
     return parser
 

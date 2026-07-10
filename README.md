@@ -13,6 +13,7 @@ It supports:
 - keeping equation numbers as normal right-aligned document text
 - setting MathType internal formula character size and Times New Roman family against document body font size, then fitting the OLE frame without unintended downscaling
 - inspecting DOCX XML, MathType native OLE streams, and cached WMF/EMF previews for OLE/image/OMML correctness
+- validating paragraph placement before batch edits and rebuilding formulas through isolated one-paragraph assets when Word/WPS COM indexing is unstable
 - exporting/inserting WMF/EMF formula images as an explicit fallback
 
 ## Where It Fits In Image-To-Editable-Formula Workflows
@@ -130,8 +131,14 @@ For a manuscript-wide offline audit that does not open Word or MathType:
 python .\scripts\mathtype_word_wps.py audit-docx-formulas `
   --docx ".\manuscript.docx" `
   --output-json ".\formula_audit.json" `
-  --include-details
+  --include-details `
+  --min-ole-width-pt 18 `
+  --min-ole-height-pt 8
 ```
+
+The size thresholds are heuristic blank-object warnings. Set either threshold to `0` for intentionally tiny one-symbol equations, or raise it when generated assets have a known minimum width.
+
+Before a batch replacement, test one formula in a scratch copy and verify that the OLE lands beside the intended equation number. OpenXML body indices and Word/WPS COM paragraph indices can differ. If the probe lands in the wrong paragraph, generate each equation in an isolated one-paragraph DOCX, validate it, and transplant the complete OLE relationship, native object, and cached preview into exact OpenXML markers. Keep a formula-number-to-source ledger and audit the assembled candidate before replacing the live manuscript.
 
 Important distinction: an editable MathType OLE shell and the document-visible preview are different layers. If the document shows `?` but the MathType editor opens normally, regenerate the cached preview or reinsert from normalized native MTEF. If MathType opens but the formula behaves as one uneditable pasted object, regenerate the formula from native MTEF or rebuild it in MathType; resizing the OLE frame cannot fix that. Treat `preview_cache_question_marks` as a warning, not a final verdict: byte-level WMF/EMF scans can flag harmless bytes, so final acceptance for this issue should include a Word/PDF rendered screenshot of the formula pages.
 
@@ -164,7 +171,7 @@ Only the Codex workflow has been exercised end-to-end in this repository so far.
 Clone or copy this folder into your Codex skills directory:
 
 ```powershell
-git clone https://github.com/liuyifan577/MathType-Word-WPS.git "$env:USERPROFILE\.codex\skills\MathType-Word-WPS"
+git clone https://github.com/pcdp577/MathType-Word-WPS.git "$env:USERPROFILE\.codex\skills\MathType-Word-WPS"
 ```
 
 Restart Codex after installation.
