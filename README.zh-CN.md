@@ -2,7 +2,7 @@
 
 中文说明 | [English](README.md)
 
-在多模态大模型辅助识别/转写公式图片的前提下，MathType-Word/WPS 提供从公式图片到可编辑 MathType 公式、自动插入 Word/WPS 文档、自适应手稿布局与结果校验的全流程能力。
+在多模态大模型辅助识别/转写公式图片的前提下，MathType-Word/WPS 提供从公式图片到可编辑 MathType 公式、自动插入 Word/WPS 文档、自适应手稿布局、结果校验与关联公式集完整性审查的全流程能力。
 
 这个工具面向论文、学位论文、报告等正式文档场景：公式不能只是截图，插入后应该能继续双击用 MathType 编辑，字号和正文协调，编号仍然是文档里的普通右对齐文本，后续排版、修改、审稿都更稳。它会自动处理很多容易踩坑的细节，包括后台打开 Word/WPS、创建真实 MathType 公式对象、按正文字号设置 MathType 内部公式主字符大小和 Times New Roman 字体族、再匹配 OLE 外框尺寸但不把复杂公式压缩到低于 MathType 自然高度、保留公式编号、检查保存后的文档结构，并区分“真正可编辑的 MathType 对象”和“只是图片或 OMML 公式”的情况。
 
@@ -16,6 +16,8 @@
 - 根据正文默认字号设置 MathType 内部公式主字符大小和 Times New Roman 字体族，再匹配 OLE 外框尺寸，避免只缩放外框造成公式视觉不统一。
 - 检查 DOCX XML、MathType 原生 OLE 流和缓存 WMF/EMF 预览，确认公式是否为 OLE 对象、图片、OMML 或其它形式。
 - 批量修改前验证段落定位；Word/WPS COM 段落索引不稳定时，支持以单段公式资产完成受控重建与包级移植。
+- 将公式集清单视为有向计算图，检查未定义或先用后定义符号、孤立输出、重复定义、实例接口缺项、废弃符号和可简化别名候选。
+- 维护公式源、正文、代码、图片、OLE 部件和预览部件之间的对应关系。
 - 在明确需要时，可使用 WMF/EMF 矢量图片作为后备方案。
 
 ## 在“图片转可编辑公式”流程中的位置
@@ -154,6 +156,25 @@ python .\scripts\mathtype_word_wps.py recover-text-input --stop-wetype
 
 该命令会重启 Windows 文本输入链，并在需要时停止腾讯 WeType 相关进程。
 
+## 审查关联公式集
+
+当多条公式共同构成一个方法、推导链或共享接口时，先建立符合 `schemas/formula_set_manifest.schema.json` 的 JSON 清单。每个公式记录稳定 ID、顺序、科学用途、定义量、依赖量、源文件，以及可选的代码、正文、图片和 OLE 锚点。
+
+插入前运行：
+
+```powershell
+python .\scripts\audit_formula_set.py ".\formula_set.json" `
+  --require-source `
+  --require-prose-anchor `
+  --output-json ".\formula_set_audit.json"
+```
+
+DOCX 组装后，补充公式编号、段落锚点、OLE 包部件和预览部件，再使用 `--require-artifact` 复查。
+
+审查器会把公式集作为有向计算图，报告未定义量、先用后定义、孤立输出、重复定义、循环依赖、共享实例输出缺项、废弃符号和单消费者别名候选。别名结果只是一项建议：变量若具有独立物理意义、承担量纲或坐标变换、参与证明或极限关系，或属于共享接口，就应保留。
+
+完整的语义层、公式对象层和原生渲染层验收规则见 `references/formula-set-integrity.md`。语义 PASS 不代表 MathType 对象正确；合法 OLE 外壳也不代表公式集已经在科学上闭环。
+
 ## 在 Cursor、Claude Code 或其它 Agent 中使用
 
 这个仓库以 Codex skill 的形式发布，但核心实现是普通 Windows Python CLI。只要其它客户端能在同一台安装了 Word/WPS 和 MathType 的 Windows 桌面上运行 PowerShell 命令，就可以直接使用。
@@ -177,3 +198,11 @@ git clone https://github.com/pcdp577/MathType-Word-WPS.git "$env:USERPROFILE\.co
 ```
 
 安装后重启 Codex。
+
+## 开发验证
+
+```powershell
+python -X utf8 .\scripts\test_formula_set_audit.py
+python -X utf8 -m py_compile .\scripts\audit_formula_set.py .\scripts\mathtype_word_wps.py
+python -X utf8 <skill-creator>\scripts\quick_validate.py .
+```

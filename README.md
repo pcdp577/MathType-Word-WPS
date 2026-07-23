@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) | English
 
-With multimodal model assistance for image-to-formula transcription, MathType-Word/WPS provides an end-to-end workflow from formula images to editable MathType equations, automatic Word/WPS document insertion, and adaptive manuscript layout.
+With multimodal model assistance for image-to-formula transcription, MathType-Word/WPS provides an end-to-end workflow from formula images to editable MathType equations, automatic Word/WPS document insertion, adaptive manuscript layout, and connected formula-set integrity auditing.
 
 This skill is designed for manuscript production where formulas must remain editable, visually consistent, and publication-ready instead of being pasted as flat screenshots. It automates the fussy parts of the workflow: opening Word/WPS in the background, inserting a real MathType equation object, keeping the equation number as normal right-aligned text, setting the MathType internal formula character size and Times New Roman family from the manuscript body font, fitting the OLE frame around that formula without shrinking complex formulas below their natural MathType height, and checking the saved document so you can tell whether the result is a true editable MathType object or only an image/OMML fallback. The primary target is `.docx`; legacy `.doc` files are supported through the same Word/WPS automation path after opening or converting them with Word/WPS when XML-level inspection is needed.
 
@@ -14,6 +14,8 @@ It supports:
 - setting MathType internal formula character size and Times New Roman family against document body font size, then fitting the OLE frame without unintended downscaling
 - inspecting DOCX XML, MathType native OLE streams, and cached WMF/EMF previews for OLE/image/OMML correctness
 - validating paragraph placement before batch edits and rebuilding formulas through isolated one-paragraph assets when Word/WPS COM indexing is unstable
+- auditing formula-set manifests as directed computation graphs, including undefined or late symbols, orphan outputs, duplicate definitions, instance contracts, deprecated symbols, and removable-alias candidates
+- maintaining source-to-equation, prose, code, figure, OLE-part, and preview-part parity across a manuscript revision
 - exporting/inserting WMF/EMF formula images as an explicit fallback
 
 ## Where It Fits In Image-To-Editable-Formula Workflows
@@ -152,6 +154,25 @@ python .\scripts\mathtype_word_wps.py recover-text-input --stop-wetype
 
 This restarts the Windows text-input chain and, when requested, stops Tencent WeType processes.
 
+## Audit A Connected Formula Set
+
+When several equations form one method or derivation, create a JSON manifest conforming to `schemas/formula_set_manifest.schema.json`. Record each formula's stable ID, order, scientific purpose, defined and used symbols, source file, and optional code, prose, figure, and OLE artifact anchors.
+
+Run the audit before insertion:
+
+```powershell
+python .\scripts\audit_formula_set.py ".\formula_set.json" `
+  --require-source `
+  --require-prose-anchor `
+  --output-json ".\formula_set_audit.json"
+```
+
+After DOCX assembly, add equation numbers, paragraph anchors, OLE package parts, and preview parts, then re-run with `--require-artifact`.
+
+The audit treats equations as a directed computation graph. It reports undefined and late-defined symbols, orphan outputs, duplicate definitions, dependency cycles, incomplete shared-interface instances, deprecated symbols, and one-consumer alias candidates. Alias findings are suggestions only: retain a quantity when it has independent physical meaning, performs a unit or coordinate conversion, participates in a proof or limiting case, or belongs to the shared interface.
+
+See `references/formula-set-integrity.md` for the semantic, artifact, and rendered acceptance gates. A semantic PASS does not prove that the MathType object is correct, and a valid OLE shell does not prove that the equation set is scientifically closed.
+
 ## Use With Cursor, Claude Code, Or Other Agents
 
 The repository is published as a Codex skill, but the actual implementation is a normal Windows Python CLI. Other coding agents can use it as long as they can run PowerShell commands on the same Windows desktop where Word/WPS and MathType are installed.
@@ -175,3 +196,11 @@ git clone https://github.com/pcdp577/MathType-Word-WPS.git "$env:USERPROFILE\.co
 ```
 
 Restart Codex after installation.
+
+## Development Validation
+
+```powershell
+python -X utf8 .\scripts\test_formula_set_audit.py
+python -X utf8 -m py_compile .\scripts\audit_formula_set.py .\scripts\mathtype_word_wps.py
+python -X utf8 <skill-creator>\scripts\quick_validate.py .
+```

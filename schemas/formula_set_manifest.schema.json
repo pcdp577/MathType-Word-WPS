@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Formula Set Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "set_id",
+    "external_symbols",
+    "final_outputs",
+    "formulas"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "set_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "external_symbols": {
+      "$ref": "#/$defs/symbolArray"
+    },
+    "final_outputs": {
+      "$ref": "#/$defs/symbolArray"
+    },
+    "retained_symbols": {
+      "$ref": "#/$defs/symbolArray"
+    },
+    "deprecated_symbols": {
+      "$ref": "#/$defs/symbolArray"
+    },
+    "allowed_redefinitions": {
+      "$ref": "#/$defs/symbolArray"
+    },
+    "formulas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/formula"
+      }
+    },
+    "instance_contracts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/instanceContract"
+      }
+    },
+    "symbol_surfaces": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/symbolArray"
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "symbolArray": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "equation_number": {
+          "type": "string"
+        },
+        "ole_part": {
+          "type": "string"
+        },
+        "preview_part": {
+          "type": "string"
+        },
+        "paragraph_anchor": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "formula": {
+      "type": "object",
+      "required": [
+        "id",
+        "order",
+        "purpose",
+        "defines",
+        "uses"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "default": "global"
+        },
+        "role": {
+          "type": "string"
+        },
+        "defines": {
+          "$ref": "#/$defs/symbolArray"
+        },
+        "uses": {
+          "$ref": "#/$defs/symbolArray"
+        },
+        "source": {
+          "type": "string"
+        },
+        "code_anchor": {
+          "type": "string"
+        },
+        "prose_anchor": {
+          "type": "string"
+        },
+        "figure_anchor": {
+          "type": "string"
+        },
+        "domain_units_bounds": {
+          "type": "object"
+        },
+        "parameter_sources": {
+          "type": "object"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        }
+      },
+      "additionalProperties": false
+    },
+    "instanceContract": {
+      "type": "object",
+      "required": [
+        "name",
+        "required_outputs",
+        "instances"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_outputs": {
+          "$ref": "#/$defs/symbolArray"
+        },
+        "instances": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "formula_ids",
+              "outputs"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "formula_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "outputs": {
+                "$ref": "#/$defs/symbolArray"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

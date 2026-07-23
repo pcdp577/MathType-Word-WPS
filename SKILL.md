@@ -1,6 +1,6 @@
 ---
 name: "mathtype-word-wps"
-description: "Use when a manuscript formula must be inserted, replaced, inspected, or resized in a DOCX document as an editable MathType OLE equation through Microsoft Word or WPS, with optional WMF/EMF fallback and body-font-matched formula sizing."
+description: "Use when manuscript formulas must be inserted, replaced, inspected, resized, or audited as editable MathType OLE equations in Word/WPS DOCX files. Supports connected formula-set manifests, source-to-object ledgers, semantic closure checks, native-stream and preview inspection, rendered glyph verification, optional WMF/EMF fallback, and body-font-matched formula sizing."
 ---
 
 # MathType-Word/WPS
@@ -31,6 +31,7 @@ For image-to-editable-formula work, this skill does not do formula OCR. First ob
 - If MathType is missing, not registered, or appears unlicensed/not activated, stop and tell the user to install, repair, register, or activate MathType before retrying.
 - Keep a backup before modifying a live manuscript.
 - Use `cleanup-leftovers` after any failed or suspicious run. It should stop MathType/MathTypeLib and safe WPS preview/embedding helpers, but it must not kill ordinary foreground document-editing sessions.
+- When several equations form one method, treat them as a connected formula set rather than independent insertion jobs. Load `references/formula-set-integrity.md`, maintain one manifest conforming to `schemas/formula_set_manifest.schema.json`, and run the semantic manifest audit before and after DOCX assembly.
 
 ## Manuscript Rebuild Gates
 
@@ -42,6 +43,28 @@ For image-to-editable-formula work, this skill does not do formula OCR. First ob
 - Use one logical relation per single-line OLE paragraph when the manuscript style numbers equations independently. Split multi-line aligned blocks into consecutive OLE objects instead of hiding several numbered relations inside one oversized object.
 - Raw code-style mathematics in body prose, including underscore subscripts, is not an acceptable fallback. Use true italic, subscript, and superscript Word runs for short inline symbols or a separate MathType OLE for display mathematics.
 - A cached question-mark warning always requires a rendered Word/PDF check. A visible `?` is a hard failure and must be regenerated from glyph-normalized source; a byte-only warning may be recorded as non-blocking only when the exported formula is visibly correct.
+
+## Connected Formula-Set Gate
+
+Use this gate for a method chapter, derivation chain, shared operator with several instances, or any edit that changes more than one dependent equation.
+
+1. Create a formula-set manifest with stable IDs, order, purpose, `defines`, `uses`, external symbols, final outputs, retained symbols, and deprecated symbols.
+2. Record instance contracts when several physical, mathematical, or algorithmic instances implement one shared interface.
+3. Run the graph audit before insertion:
+
+```powershell
+python "${SKILL_DIR}\scripts\audit_formula_set.py" "<formula_set.json>" `
+  --require-source `
+  --require-prose-anchor `
+  --output-json "<formula_set_audit.json>"
+```
+
+4. Resolve every `FORM-UNDEF`, `FORM-ORDER`, `FORM-COLLIDE`, `FORM-INSTANCE`, `FORM-DEPRECATED`, and `FORM-CYCLE` error before assembly.
+5. Review `FORM-ORPHAN` warnings and `FORM-ALIAS` suggestions scientifically. Do not remove a quantity that has an independent physical role, unit or coordinate conversion, limiting-case role, proof role, or shared-interface responsibility.
+6. After insertion, enrich the same manifest with equation numbers, paragraph anchors, OLE package parts, preview parts, code anchors, prose anchors, and figure symbol inventories.
+7. Re-run with `--require-artifact` and scan the rendered Word/PDF pages. Semantic PASS does not prove OLE correctness, and OLE correctness does not prove semantic closure.
+
+The formula-set audit is read-only. It reports candidates and contract failures; it never rewrites equations or decides scientific meaning automatically.
 
 ## Environment
 
@@ -214,4 +237,16 @@ python "${SKILL_DIR}\scripts\mathtype_word_wps.py" replace-docx `
 
 ```powershell
 python "${SKILL_DIR}\scripts\mathtype_word_wps.py" cleanup-leftovers
+```
+
+## Validation
+
+After changing this skill, run:
+
+```powershell
+python -X utf8 "${SKILL_DIR}\scripts\test_formula_set_audit.py"
+python -X utf8 -m py_compile `
+  "${SKILL_DIR}\scripts\audit_formula_set.py" `
+  "${SKILL_DIR}\scripts\mathtype_word_wps.py"
+python -X utf8 "<skill-creator>\scripts\quick_validate.py" "${SKILL_DIR}"
 ```
