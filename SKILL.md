@@ -33,6 +33,14 @@ For image-to-editable-formula work, this skill does not do formula OCR. First ob
 - Use `cleanup-leftovers` after any failed or suspicious run. It should stop MathType/MathTypeLib and safe WPS preview/embedding helpers, but it must not kill ordinary foreground document-editing sessions.
 - When several equations form one method, treat them as a connected formula set rather than independent insertion jobs. Load `references/formula-set-integrity.md`, maintain one manifest conforming to `schemas/formula_set_manifest.schema.json`, and run the semantic manifest audit before and after DOCX assembly.
 
+## Standalone Distribution Contract
+
+- This skill is self-contained and must not require `research-paper-writing`, `paper-review-audit`, or any other manuscript skill at import time or runtime.
+- Keep the formula-set schema, auditor, tests, OLE workflow, and acceptance reference inside this repository. Do not replace bundled resources with paths into another skill checkout.
+- External manuscript-writing or review skills are optional collaborators only. Their absence must not block formula-set auditing, MathType insertion, package inspection, or rendered verification.
+- The documented Windows, Word/WPS, MathType, Python, and PyPI requirements are platform dependencies, not cross-skill dependencies.
+- Run `scripts/test_standalone_install.py` after changing imports, paths, packaged resources, or installation instructions.
+
 ## Manuscript Rebuild Gates
 
 - Do not assume an OpenXML body-paragraph index is identical to the Word/WPS COM `Paragraphs` index. Before any batch insertion, run one scratch-copy placement probe and verify the resulting OLE lands beside the intended equation number. If the probe lands elsewhere, stop direct COM insertion.
@@ -245,6 +253,7 @@ After changing this skill, run:
 
 ```powershell
 python -X utf8 "${SKILL_DIR}\scripts\test_formula_set_audit.py"
+python -X utf8 "${SKILL_DIR}\scripts\test_standalone_install.py"
 python -X utf8 -m py_compile `
   "${SKILL_DIR}\scripts\audit_formula_set.py" `
   "${SKILL_DIR}\scripts\mathtype_word_wps.py"

@@ -8,6 +8,12 @@
 
 主要目标格式是 `.docx`。旧版 `.doc` 也可以通过 Word/WPS 自动化流程处理；如果需要做 XML 级检查，建议先用 Word/WPS 打开或转换为 `.docx`。
 
+## 独立分发与使用
+
+本仓库是一套完整、可独立安装的 skill，随包提供公式集 schema、计算图审计器、测试、MathType OLE 实现、DOCX 包检查和验收规则。它不会导入或依赖 `evidence-grounded-manuscript-skills`、`research-paper-writing` 或 `paper-review-audit`。
+
+其它论文写作或审查 skill 可以把同一份清单格式作为可选互操作接口，但不是安装或运行前提。用户只安装 MathType-Word/WPS，也可以完成公式集审查、可编辑公式插入、DOCX 包检查和渲染验证；所需条件仅为下文明确列出的 Windows、Word/WPS、MathType 和 Python 环境。
+
 ## 支持功能
 
 - 创建真实可编辑的 MathType OLE 公式对象：`Equation.DSMT4`。这是 Word/WPS 能重新调用 MathType 打开并编辑的公式对象类型。
@@ -203,6 +209,7 @@ git clone https://github.com/pcdp577/MathType-Word-WPS.git "$env:USERPROFILE\.co
 
 ```powershell
 python -X utf8 .\scripts\test_formula_set_audit.py
+python -X utf8 .\scripts\test_standalone_install.py
 python -X utf8 -m py_compile .\scripts\audit_formula_set.py .\scripts\mathtype_word_wps.py
 python -X utf8 <skill-creator>\scripts\quick_validate.py .
 ```

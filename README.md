@@ -6,6 +6,12 @@ With multimodal model assistance for image-to-formula transcription, MathType-Wo
 
 This skill is designed for manuscript production where formulas must remain editable, visually consistent, and publication-ready instead of being pasted as flat screenshots. It automates the fussy parts of the workflow: opening Word/WPS in the background, inserting a real MathType equation object, keeping the equation number as normal right-aligned text, setting the MathType internal formula character size and Times New Roman family from the manuscript body font, fitting the OLE frame around that formula without shrinking complex formulas below their natural MathType height, and checking the saved document so you can tell whether the result is a true editable MathType object or only an image/OMML fallback. The primary target is `.docx`; legacy `.doc` files are supported through the same Word/WPS automation path after opening or converting them with Word/WPS when XML-level inspection is needed.
 
+## Standalone By Design
+
+This repository is a complete standalone skill. It includes its own formula-set schema, graph auditor, tests, MathType OLE implementation, package inspector, and acceptance guidance. It does not import or require `evidence-grounded-manuscript-skills`, `research-paper-writing`, or `paper-review-audit`.
+
+Other manuscript-writing or review skills may consume the same manifest format as an optional interoperability layer, but they are not installation or runtime dependencies. A user who installs only MathType-Word/WPS can still perform formula-set auditing, editable equation insertion, DOCX package inspection, and rendered verification, subject only to the Windows/Word-or-WPS/MathType requirements below.
+
 It supports:
 
 - creating real editable MathType OLE equations (`Equation.DSMT4`, the MathType equation object type that Word/WPS can reopen and edit with MathType)
@@ -201,6 +207,7 @@ Restart Codex after installation.
 
 ```powershell
 python -X utf8 .\scripts\test_formula_set_audit.py
+python -X utf8 .\scripts\test_standalone_install.py
 python -X utf8 -m py_compile .\scripts\audit_formula_set.py .\scripts\mathtype_word_wps.py
 python -X utf8 <skill-creator>\scripts\quick_validate.py .
 ```
